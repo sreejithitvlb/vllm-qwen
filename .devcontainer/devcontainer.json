@@ -1,0 +1,55 @@
+{
+  // Dev Container for the Jetson AGX Orin (JetPack 6.2 / L4T R36.5.0).
+  //
+  // Builds from ../Dockerfile, which layers Qwen2 dependencies on top of
+  // dustynv/vllm:r36.4.0 (PyTorch + CUDA 12.6 + vLLM, prebuilt for ARM64/JetPack 6.x).
+  //
+  // Architecture:
+  //   dustynv/vllm:r36.4.0  ← Jetson-optimised base (CUDA + vLLM)
+  //       └── Dockerfile     ← production image (Qwen deps + app code)
+  //             └── here     ← dev environment (VS Code extensions on top)
+  "name": "jetson-vllm (l4t r36.5 / jp6.2)",
+  "build": {
+    "dockerfile": "../Dockerfile"
+  },
+
+  // Default Docker runtime on the Jetson is `runc`; the GPU must be requested explicitly.
+  // Requires the nvidia container runtime to be registered with Docker:
+  //   sudo apt-get install -y nvidia-container-toolkit
+  //   sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+  "runArgs": [
+    "--runtime=nvidia",
+    "--shm-size=8g"
+  ],
+
+  // Mirrors ENV HF_HOME in the Dockerfile so dev and production resolve the cache the same way.
+  // Uncomment the mounts block below to persist the HF cache across container rebuilds.
+  "containerEnv": {
+    "HF_HOME": "/workspace/.cache/huggingface"
+  },
+
+  // Bind-mount an NVMe/external disk as the HF model cache to avoid re-downloading weights
+  // on every rebuild. Uncomment once the storage path is confirmed on the host.
+  // "mounts": [
+  //   "source=/mnt/nvme/hf-cache,target=/workspace/.cache/huggingface,type=bind"
+  // ],
+
+  "customizations": {
+    "vscode": {
+      // ms-python + pylance  : Python language support and type checking
+      // jupyter              : notebook support for interactive model testing
+      // claude-code          : AI coding assistant
+      // vscode-containers    : Docker GUI — browse images, manage containers, stream logs
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "anthropic.claude-code",
+        "ms-azuretools.vscode-containers"
+      ]
+    }
+  },
+
+  // GPU/CUDA sanity check on first build — surfaces driver/runtime problems immediately.
+  "postCreateCommand": "python3 -c \"import torch; print('torch', torch.__version__, '| cuda available:', torch.cuda.is_available(), '|', (torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU'))\""
+}
