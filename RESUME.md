@@ -197,12 +197,527 @@ tracks **active parameters**, not total. Favor **low active-param MoE**. Ampere 
 
 ---
 
+## vLLM Core Concepts (learn these first)
+
+A short map of the ideas you will encounter when reading vLLM docs or tuning flags.
+No need to go deep on all of them up front — the sequence below is the right order.
+
+### 1. PagedAttention (the core idea)
+vLLM's defining innovation. Normally the KV cache (the key/value tensors produced during
+attention for every token in the context) is allocated as one big contiguous block per
+sequence — wasteful and hard to share. PagedAttention splits the KV cache into fixed-size
+**pages** (blocks of 16 tokens by default) stored non-contiguously, like virtual memory.
+This lets vLLM:
+- pack sequences of different lengths without fragmentation,
+- share KV pages between requests that share a prefix (prefix caching),
+- swap pages to CPU RAM when GPU memory is full (`--swap-space`).
+**Key takeaway:** `--block-size` controls page size; `--gpu-memory-utilization` controls how
+much GPU RAM vLLM reserves for pages.
+
+### 2. Continuous batching
+Traditional serving processes one request at a time (or a fixed batch). vLLM uses
+**continuous batching** (also called iteration-level scheduling): new requests are inserted
+into the running batch as soon as a slot frees, without waiting for the slowest sequence to
+finish. This dramatically improves GPU utilization under concurrent load.
+`--max-num-seqs` caps the number of sequences in the batch at any moment.
+
+### 3. Prefill vs decode (the two inference phases)
+Every request goes through two phases:
+- **Prefill:** process all input prompt tokens in one forward pass (compute-heavy, runs fast,
+  produces the first output token). Metric: **TTFT** (time-to-first-token).
+- **Decode:** generate one token per forward pass, auto-regressively, until done (memory-
+  bandwidth-bound). Metric: **TPOT** (time-per-output-token) or **ITL** (inter-token latency).
+
+On the Orin, decode is the bottleneck because it is memory-bandwidth-bound (204 GB/s).
+For MoE models, only the active experts' weights are read per token — that is why a 30B MoE
+with 3B active parameters decodes at roughly a 3B dense model's speed.
+
+### 4. KV cache sizing
+`--gpu-memory-utilization × total_GPU_RAM − model_weights_VRAM = KV cache budget`.
+A larger KV cache lets more sequences run in parallel and supports longer `max-model-len`.
+If you reduce `--max-model-len`, more of the KV budget is available per concurrent sequence.
+
+### 5. Quantization (AWQ / GPTQ)
+Both are **post-training weight quantization** schemes that compress weights to INT4 or INT8:
+- **AWQ** (Activation-aware Weight Quantization) — searches for the best per-channel scale
+  factors by sampling activations; generally better quality than GPTQ at same bit-width.
+  Flag: `--quantization awq`. Ampere supports INT4 GEMM kernels; no FP8.
+- **GPTQ** — older method; broader model availability. Flag: `--quantization gptq`.
+Only the **weights** are quantized; activations remain in FP16. The model loads faster and
+uses ~2× less VRAM than BF16.
+
+### 6. The two vLLM APIs
+
+| API | When to use | Entry point |
+|-----|-------------|-------------|
+| `vllm.LLM` (offline) | Batch inference in a script; no HTTP | `from vllm import LLM, SamplingParams` |
+| `vllm serve` (online) | Persistent HTTP server; OpenAI-compatible | `vllm serve <model> [flags]` |
+
+For serving on the Jetson, you want `vllm serve`. The `LLM` class is useful for one-off experiments.
+
+### 7. SamplingParams (controls text generation)
+```python
+from vllm import SamplingParams
+params = SamplingParams(
+    temperature=0.7,      # randomness; 0 = greedy, 1 = sample from full distribution
+    top_p=0.9,            # nucleus sampling: keep only the top-p probability mass
+    max_tokens=256,       # max output tokens; prevents runaway generation
+    stop=["</s>", "\n"],  # stop sequences
+    repetition_penalty=1.1,
+)
+```
+In the HTTP API these map to the same-named JSON fields in the request body.
+
+### 8. OpenAI-compatible API
+`vllm serve` exposes three endpoints that match the OpenAI API shape:
+- `GET  /v1/models` — list loaded model(s)
+- `POST /v1/chat/completions` — chat (messages array in, assistant reply out)
+- `POST /v1/completions` — raw text completion (legacy prompt-in, text-out)
+
+Any client built for the OpenAI Python SDK works with vLLM with only a `base_url` change:
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://jetson:8000/v1", api_key="not-needed")
+resp = client.chat.completions.create(
+    model="qwen2.5-7b",
+    messages=[{"role": "user", "content": "Hello!"}],
+    max_tokens=128,
+)
+print(resp.choices[0].message.content)
+```
+
+### 9. Chunked prefill (`--enable-chunked-prefill`)
+When a long prompt arrives, the prefill pass can take hundreds of milliseconds and stall
+decode for in-flight sequences. Chunked prefill breaks the prefill into smaller chunks
+interleaved with decode steps — trades TTFT for smoother TPOT under mixed traffic. Enable
+when `max-model-len` is large (≥ 8k) and you care about tail latency, not just throughput.
+
+### 10. Async engine (advanced)
+`vllm serve` internally uses `AsyncLLMEngine` — an async wrapper around the core engine that
+handles concurrent HTTP requests without blocking. You only touch this if you embed vLLM into
+a custom FastAPI app rather than using the built-in server.
+
+---
+
+## Milestone 3 — vLLM Serving Layer (implementation plan)
+
+This section is the hands-on guide for standing up the serving layer once Docker is installed on the Jetson host (the remaining milestone 2 step).
+
+---
+
+### Step 0 — prerequisites (finish milestone 2)
+
+```bash
+# On the Jetson host (SSH in)
+sudo apt update && sudo apt install -y docker.io nvidia-container-toolkit
+sudo usermod -aG docker sree
+sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
+sudo systemctl restart docker
+# Log out and back in so the docker group takes effect, then verify:
+docker run --rm --runtime=nvidia dustynv/vllm:r36.4.0 nvidia-smi
+```
+
+---
+
+### Step 1 — download model weights
+
+Model weights live **outside** the container so they survive rebuilds.
+Create a persistent cache directory on the host (or wherever ~46 G of eMMC allows):
+
+```bash
+mkdir -p ~/hf-cache
+```
+
+Download the dense model (AWQ INT4, ~5 GB):
+
+```bash
+docker run --rm \
+  -v ~/hf-cache:/root/.cache/huggingface \
+  -e HF_HOME=/root/.cache/huggingface \
+  dustynv/vllm:r36.4.0 \
+  huggingface-cli download Qwen/Qwen2.5-7B-Instruct-AWQ
+```
+
+If the model is gated, add `-e HUGGING_FACE_HUB_TOKEN=<your-token>`.
+
+---
+
+### Step 2 — launch the vLLM server (Docker)
+
+```bash
+docker run --rm \
+  --runtime=nvidia \
+  --shm-size=8g \
+  -v ~/hf-cache:/root/.cache/huggingface \
+  -e HF_HOME=/root/.cache/huggingface \
+  -p 8000:8000 \
+  dustynv/vllm:r36.4.0 \
+  vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ \
+    --quantization awq \
+    --dtype float16 \
+    --gpu-memory-utilization 0.90 \
+    --max-model-len 8192 \
+    --tensor-parallel-size 1 \
+    --max-num-seqs 32 \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --served-model-name qwen2.5-7b \
+    --trust-remote-code
+```
+
+Server is ready when the log shows: `INFO:     Application startup complete.`
+
+---
+
+### Step 3 — configuration flags (what each one does)
+
+| Flag | Value (dense) | Why |
+|------|---------------|-----|
+| `--quantization awq` | `awq` | Load weights as AWQ INT4; halves VRAM vs FP16. |
+| `--dtype` | `float16` | Compute dtype for non-weight ops. Ampere supports FP16 and BF16; FP16 is safe here. (No FP8 on Ampere.) |
+| `--gpu-memory-utilization` | `0.90` | Fraction of GPU memory vLLM reserves for KV cache + model. 0.90 leaves a 10% safety margin. Raise to 0.95 if you need more context; lower if OOM. |
+| `--max-model-len` | `8192` | Max total tokens (prompt + output). KV cache is pre-allocated for this length — shorter = more room for concurrent sequences. |
+| `--tensor-parallel-size` | `1` | Number of GPUs. Orin has one GPU, so always 1. |
+| `--max-num-seqs` | `32` | Max in-flight requests. On a 64 GB Orin this can go higher; start at 32 and tune. |
+| `--host` | `0.0.0.0` | Bind on all interfaces so the laptop can reach the Jetson over SSH or LAN. |
+| `--port` | `8000` | OpenAI-compatible API port. |
+| `--served-model-name` | `qwen2.5-7b` | The name clients use in `model:` fields of API requests (alias — the actual model weights are unchanged). |
+| `--trust-remote-code` | _(flag)_ | Qwen models use custom model code on HF; required for Qwen family. |
+| `--enforce-eager` | _(flag, add if needed)_ | Disables CUDA graph capture. Lower throughput but more stable if graph capture OOMs or hangs. Add for MoE or long-context runs if startup fails. |
+| `--swap-space` | `4` (GiB) | CPU RAM to use as KV cache overflow (paged out when GPU KV cache is full). Add `--swap-space 4` for long-context or high-concurrency. |
+| `--block-size` | `16` (default) | Paged-attention block size in tokens. Leave at default unless you are tuning memory fragmentation. |
+| `--kv-cache-dtype` | `auto` (default) | `auto` = same as `--dtype`. Do **not** set `fp8` — Ampere has no FP8. |
+| `--enable-chunked-prefill` | _(flag, optional)_ | Breaks long prefills into chunks to reduce TTFT jitter under load. Useful when `max-model-len` is large. |
+| `--max-log-len` | `100` | Truncates logged prompts. Add to keep server logs readable. |
+
+**Environment variables** (set with `-e` in `docker run` or in the container):
+
+| Variable | Purpose |
+|----------|---------|
+| `HF_HOME` | HuggingFace cache root — must match the volume mount. |
+| `HUGGING_FACE_HUB_TOKEN` | Auth token for gated models. |
+| `VLLM_WORKER_MULTIPROC_METHOD` | Set to `spawn` if you hit multiprocessing issues (rare). |
+| `CUDA_VISIBLE_DEVICES` | Restrict which GPU(s) vLLM sees. Orin has one, so leave unset. |
+
+---
+
+### Step 4 — smoke-test the API
+
+vLLM exposes an **OpenAI-compatible REST API**. Test with `curl` from the laptop (replace `jetson` with the Jetson's IP/hostname):
+
+```bash
+# List loaded models
+curl http://jetson:8000/v1/models
+
+# Chat completion
+curl http://jetson:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5-7b",
+    "messages": [{"role": "user", "content": "Hello, what is 2+2?"}],
+    "max_tokens": 64
+  }'
+
+# Text completion (legacy)
+curl http://jetson:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5-7b",
+    "prompt": "The capital of France is",
+    "max_tokens": 16
+  }'
+```
+
+Expected responses are JSON with `choices[0].message.content` (chat) or `choices[0].text` (completion).
+
+---
+
+### Step 5 — serving script (main.py)
+
+Two patterns — pick one:
+
+**Pattern A: launch the OpenAI-compatible HTTP server programmatically**
+
+```python
+import subprocess, sys
+
+def main():
+    cmd = [
+        "vllm", "serve", "Qwen/Qwen2.5-7B-Instruct-AWQ",
+        "--quantization", "awq",
+        "--dtype", "float16",
+        "--gpu-memory-utilization", "0.90",
+        "--max-model-len", "8192",
+        "--tensor-parallel-size", "1",
+        "--max-num-seqs", "32",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--served-model-name", "qwen2.5-7b",
+        "--trust-remote-code",
+    ]
+    subprocess.run(cmd, check=True)
+
+if __name__ == "__main__":
+    main()
+```
+
+The container `CMD` already calls `python3 main.py`, so this pattern lets `docker run` start the server directly.
+
+**Pattern B: use vLLM's Python API for offline/batch inference (no HTTP server)**
+
+```python
+from vllm import LLM, SamplingParams
+
+def main():
+    llm = LLM(
+        model="Qwen/Qwen2.5-7B-Instruct-AWQ",
+        quantization="awq",
+        dtype="float16",
+        gpu_memory_utilization=0.90,
+        max_model_len=8192,
+        tensor_parallel_size=1,
+        trust_remote_code=True,
+    )
+    sampling = SamplingParams(temperature=0.7, max_tokens=256)
+    outputs = llm.generate(["Hello, what is 2+2?"], sampling)
+    for o in outputs:
+        print(o.outputs[0].text)
+
+if __name__ == "__main__":
+    main()
+```
+
+Pattern B is useful for batch jobs; Pattern A is what you want for a persistent serving endpoint.
+
+---
+
+### Step 6 — Jetson performance tuning (before benchmarking)
+
+Run these on the Jetson host **before** starting the server container:
+
+```bash
+# Maximum power/performance mode (MAXN — all CPU + GPU cores at full clock)
+sudo nvpmodel -m 0
+
+# Lock clocks at maximum (eliminates throttling during benchmark)
+sudo jetson_clocks
+
+# Confirm GPU clock is pinned
+cat /sys/devices/17000000.gpu/devfreq/17000000.gpu/cur_freq
+```
+
+`nvpmodel -m 0` + `jetson_clocks` are **required** before any benchmark run — without them, clocks
+throttle mid-run and results are not reproducible. Add them to a startup script or cron on the Jetson.
+
+---
+
+### Step 7 — MoE model flags (Milestone 4: Qwen3-30B-A3B)
+
+When switching from the dense 7B to the 30B MoE, change these flags:
+
+```bash
+vllm serve Qwen/Qwen3-30B-A3B-AWQ \
+  --quantization awq \
+  --dtype float16 \
+  --gpu-memory-utilization 0.90 \
+  --max-model-len 20480 \          # MoE can handle longer context; 20k is a safe start
+  --tensor-parallel-size 1 \
+  --max-num-seqs 16 \              # fewer slots — MoE KV cache is still sized for active experts
+  --host 0.0.0.0 \
+  --port 8000 \
+  --served-model-name qwen3-30b-moe \
+  --trust-remote-code \
+  --enforce-eager                  # add this first run; remove if startup succeeds without it
+```
+
+MoE notes:
+- The Orin's 204 GB/s memory bandwidth limits **decode** speed to ~active-parameter bandwidth,
+  so Qwen3-30B-A3B (3B active) should feel like a 3B dense model at decode time.
+- If the HF cache + model weights start crowding the 46 G eMMC, move `HF_HOME` to an NVMe
+  (mount as `/mnt/nvme/hf-cache`) — the only reason to buy the NVMe.
+- AWQ variant: look for `Qwen/Qwen3-30B-A3B-AWQ` or a community-quantized version; if no AWQ
+  exists, use `--quantization gptq` with a GPTQ model instead.
+
+---
+
+### Step 8 — serving checklist
+
+- [ ] Docker + nvidia-container-toolkit installed; `docker run --rm --runtime=nvidia … nvidia-smi` passes
+- [ ] `nvidia-ctk runtime configure --runtime=docker --set-as-default` done + docker restarted
+- [ ] `~/hf-cache` directory created on host; volume-mounted into container
+- [ ] Dense model weights downloaded: `Qwen/Qwen2.5-7B-Instruct-AWQ`
+- [ ] vLLM server starts without error; log shows `Application startup complete.`
+- [ ] `/v1/models` curl returns the model name
+- [ ] `/v1/chat/completions` curl returns a sensible answer
+- [ ] `nvpmodel -m 0` + `jetson_clocks` run before any benchmark
+- [ ] Dense model benchmarked (token/s, TTFT) — then switch to MoE
+
+---
+
 ## Benchmarking plan (milestone 5)
-- **Tools:** `vllm bench serve` (built-in) and/or NVIDIA **`genai-perf`**.
-- **Metrics:** TTFT (time-to-first-token), TPOT / ITL (inter-token latency), output tok/s,
-  request throughput, and concurrency scaling.
-- **Stabilize clocks first:** `sudo nvpmodel -m 0` (MAXN) + `sudo jetson_clocks` before runs.
-- Compare shortlist models head-to-head at matched `max-model-len` / concurrency.
+
+**Stabilize clocks first** (always, before every run):
+```bash
+sudo nvpmodel -m 0   # MAXN power mode — all CPU + GPU cores unlocked
+sudo jetson_clocks   # lock clocks at maximum, prevent mid-run throttle
+```
+
+---
+
+### Metrics tooling — what's available and where
+
+#### Already on the Jetson host (ships with L4T — no install needed)
+
+**`tegrastats`** — the primary hardware metrics stream for Jetson.
+Outputs a line every interval with: GPU/CPU load, RAM used, die temperatures,
+and **power draw per rail** (VDD_CPU, VDD_GPU, VDD_SOC, total board power).
+Power is the most important edge-device metric and only `tegrastats` gives it.
+
+```bash
+# Stream at 500 ms intervals, log to file (run this in a separate SSH session
+# WHILE the benchmark is running in another session)
+tegrastats --interval 500 | tee tegrastats_$(date +%Y%m%d_%H%M%S).log
+
+# Sample output line (one line per interval):
+# RAM 3212/62833MB (lfb 13x4MB) SWAP 0/31416MB (cached 0MB)
+# CPU [4%@729,3%@729,2%@729,2%@729,off,off,off,off] EMC_FREQ 3%@3199
+# GR3D_FREQ 78%@1300 VDD_CPU_CV 1253mW VDD_SOC_CV 1876mW VDD_GPU_CV 4912mW
+# Tboard@40C Tdiode@41.5C TJ@46.5C
+```
+
+Key fields:
+| Field | Meaning |
+|-------|---------|
+| `GR3D_FREQ X%@YMHz` | GPU utilization % and current clock |
+| `RAM X/YMB` | Host RAM used / total (unified memory — same pool as GPU) |
+| `VDD_GPU_CV XmW` | GPU power draw in milliwatts |
+| `VDD_CPU_CV XmW` | CPU power draw |
+| `VDD_SOC_CV XmW` | SoC power draw |
+| `TJ@XC` | Junction temperature (the thermal throttle reference) |
+
+**`nvidia-smi`** — confirmed working (`nvidia-smi dmon` streams GPU stats too, but `tegrastats` is preferred on Jetson because it adds power and thermal data that `nvidia-smi` omits).
+
+---
+
+#### Inside the vLLM container (available once Docker is installed)
+
+**`vllm bench serve`** — the built-in LLM serving benchmark.
+Sends concurrent requests to the running vLLM HTTP server and measures latency/throughput.
+
+```bash
+# Run from inside the container (or via docker exec) while the server is up on :8000
+# Typical run: 100 prompts, input ~512 tokens, output ~128 tokens, 10 concurrent users
+python -m vllm.entrypoints.benchmark_serving \
+  --backend vllm \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --model qwen2.5-7b \
+  --dataset-name random \
+  --num-prompts 100 \
+  --input-len 512 \
+  --output-len 128 \
+  --request-rate 10 \
+  --max-concurrency 10
+```
+
+Output reports:
+- **TTFT** (time-to-first-token, mean + percentiles)
+- **TPOT / ITL** (inter-token latency)
+- **Throughput** (output tok/s, request/s)
+- **E2E latency** (total request time)
+
+Concurrency sweep (compare models at matched load):
+```bash
+for C in 1 4 8 16; do
+  echo "--- concurrency $C ---"
+  python -m vllm.entrypoints.benchmark_serving \
+    --model qwen2.5-7b --num-prompts 100 \
+    --input-len 512 --output-len 128 \
+    --max-concurrency $C
+done
+```
+
+---
+
+#### Nice-to-have: `jtop` (install once on the host)
+
+`jtop` (from the `jetson-stats` package) is a terminal dashboard that combines GPU, CPU,
+RAM, clocks, power, and temperature into one readable screen. Easier to eyeball during
+a run than raw `tegrastats` log lines.
+
+```bash
+# One-time install on the Jetson host (outside Docker)
+sudo pip3 install jetson-stats
+sudo systemctl restart jtop.service   # starts a background stats collector
+
+# Run the dashboard (Ctrl+C to exit)
+jtop
+```
+
+`jtop` also has a Python API for programmatic metric collection if you want to log to CSV.
+
+---
+
+#### Optional advanced: `genai-perf` (NVIDIA Triton toolkit)
+
+`genai-perf` gives richer output — concurrency sweeps, p50/p90/p99 latencies, CSV/JSON export,
+and profile-by-phase graphs. It requires the Triton `perf_analyzer` binary.
+
+```bash
+# Install inside the vLLM container (or a separate Triton container)
+pip install genai-perf
+
+genai-perf profile \
+  -m qwen2.5-7b \
+  --service-kind openai \
+  --endpoint v1/chat/completions \
+  --endpoint-type chat \
+  --url http://localhost:8000 \
+  --input-tokens-mean 512 \
+  --output-tokens-mean 128 \
+  --concurrency 1 4 8 16
+```
+
+This is optional for milestone 5 — `vllm bench serve` + `tegrastats` covers the core metrics.
+
+---
+
+### Running both tools in parallel (the standard workflow)
+
+Open **two SSH sessions** to the Jetson simultaneously:
+
+**Terminal 1 — start hardware logging:**
+```bash
+tegrastats --interval 500 | tee run_dense_$(date +%Y%m%d_%H%M%S).log
+```
+
+**Terminal 2 — run the LLM benchmark (inside the container):**
+```bash
+docker exec -it <vllm-container-name> \
+  python -m vllm.entrypoints.benchmark_serving \
+    --model qwen2.5-7b --num-prompts 200 \
+    --input-len 512 --output-len 128 \
+    --max-concurrency 8 \
+  | tee bench_dense_$(date +%Y%m%d_%H%M%S).log
+```
+
+Stop `tegrastats` (Ctrl+C) when the benchmark finishes. The two log files together give you:
+- LLM latency/throughput from `bench_*.log`
+- GPU load, power draw, and temperature over the same time window from `run_*.log`
+
+---
+
+### Metrics summary table (what to collect per model)
+
+| Metric | Tool | Target (Qwen3-30B-A3B reference) |
+|--------|------|----------------------------------|
+| TTFT (p50 / p99) | `vllm bench serve` | < 500 ms / < 1 s at C=1 |
+| TPOT / ITL | `vllm bench serve` | ~13–25 ms/token (41–77 tok/s) |
+| Output tok/s | `vllm bench serve` | ~41 tok/s baseline, ~77 NVIDIA-tuned |
+| GPU utilization | `tegrastats` `GR3D_FREQ` | > 80% during decode |
+| GPU power (W) | `tegrastats` `VDD_GPU_CV` | log for efficiency ratio |
+| Peak RAM | `tegrastats` `RAM` | should stay well under 61 GB |
+| Peak temperature | `tegrastats` `TJ` | watch for thermal throttle (> 90°C) |
 
 ---
 
