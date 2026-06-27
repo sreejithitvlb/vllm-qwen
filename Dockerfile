@@ -9,7 +9,15 @@ FROM dustynv/vllm:r36.4.0
 # - tiktoken             : Qwen tokenizer backend
 # - einops               : tensor ops used by Qwen attention layers
 # - transformers_stream_generator : streaming generation helper
+#
+# Install from upstream PyPI, NOT the Jetson wheel index baked into the base image.
+# dustynv sets PIP_INDEX_URL=http://jetson.webredirect.org/..., whose host only has
+# an IPv6 (AAAA) record; Docker's default bridge is IPv4-only, so the build can't
+# resolve it ("Errno -2 Name or service not known"). These deps are pure-Python or
+# ship aarch64 wheels on PyPI — the Jetson index is only needed for torch/vllm/CUDA,
+# which are already present in the base image.
 RUN pip install --no-cache-dir \
+    --index-url https://pypi.org/simple \
     transformers>=4.40.0 \
     accelerate \
     tiktoken \
