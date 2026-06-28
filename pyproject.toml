@@ -1,7 +1,9 @@
 [project]
 name = "vllm-qwen"
 version = "0.1.0"
-description = "Add your description here"
+description = "Serve Qwen models with vLLM on Jetson AGX Orin"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+    "huggingface-hub",
+]
