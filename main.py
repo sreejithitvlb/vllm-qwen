@@ -6,8 +6,8 @@ import sys
 MODEL = os.environ.get("MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ")
 SERVED_NAME = os.environ.get("SERVED_MODEL_NAME", "qwen2.5-7b")
 PORT = os.environ.get("PORT", "8000")
-GPU_MEM_UTIL = os.environ.get("GPU_MEM_UTIL", "0.75")
-MAX_MODEL_LEN = os.environ.get("MAX_MODEL_LEN", "8192")
+GPU_MEM_UTIL = os.environ.get("GPU_MEM_UTIL", "0.83")
+MAX_MODEL_LEN = os.environ.get("MAX_MODEL_LEN", "4096")
 MAX_NUM_SEQS = os.environ.get("MAX_NUM_SEQS", "32")
 
 
@@ -24,6 +24,7 @@ def main():
         "--host", "0.0.0.0",
         "--port", PORT,
         "--served-model-name", SERVED_NAME,
+        "--enable-prefix-caching",
         "--trust-remote-code",
         "--max-log-len", "100",
     ]
