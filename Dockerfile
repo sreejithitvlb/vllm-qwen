@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir uv
 # resolve it ("Errno -2 Name or service not known"). These deps are pure-Python or
 # ship aarch64 wheels on PyPI — the Jetson index is only needed for torch/vllm/CUDA,
 # which are already present in the base image.
-RUN uv pip install --system --no-cache \
+RUN uv pip install --system --no-cache --break-system-packages \
     --index-url https://pypi.org/simple \
     "transformers>=4.40.0" \
     accelerate \
