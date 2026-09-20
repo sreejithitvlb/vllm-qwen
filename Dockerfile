@@ -24,7 +24,8 @@ RUN uv pip install --system --no-cache --break-system-packages \
     accelerate \
     tiktoken \
     einops \
-    transformers_stream_generator
+    transformers_stream_generator \
+    pyyaml
 
 WORKDIR /app
 

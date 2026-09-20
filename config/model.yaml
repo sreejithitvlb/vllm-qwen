@@ -1,0 +1,13 @@
+# Model loading configuration
+# https://docs.vllm.ai/en/latest/models/index.html
+model: Qwen/Qwen2.5-7B-Instruct-AWQ
+served_model_name: qwen2.5-7b
+
+# Quantization & data type
+# https://docs.vllm.ai/en/latest/quantization/index.html
+quantization: awq_marlin
+dtype: float16
+
+# Model-specific settings
+max_model_len: 4096
+trust_remote_code: true

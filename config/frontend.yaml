@@ -1,0 +1,5 @@
+# External frontend/UI application configuration
+# Use these values to connect your separate UI project to the vLLM API
+
+api_base_url: "http://0.0.0.0:8000/v1"
+api_timeout: 30

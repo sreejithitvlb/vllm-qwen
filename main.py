@@ -2,32 +2,63 @@ import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
+import yaml
 
-MODEL = os.environ.get("MODEL", "Qwen/Qwen2.5-7B-Instruct-AWQ")
-SERVED_NAME = os.environ.get("SERVED_MODEL_NAME", "qwen2.5-7b")
-PORT = os.environ.get("PORT", "8000")
-GPU_MEM_UTIL = os.environ.get("GPU_MEM_UTIL", "0.83")
-MAX_MODEL_LEN = os.environ.get("MAX_MODEL_LEN", "4096")
-MAX_NUM_SEQS = os.environ.get("MAX_NUM_SEQS", "32")
+
+def load_configs(config_dir: str = "config") -> tuple[dict, dict]:
+    cfg_path = Path(config_dir)
+    vllm_config: dict = {}
+    frontend_config: dict = {}
+
+    if cfg_path.exists():
+        for yaml_file in sorted(cfg_path.glob("*.yaml")):
+            with open(yaml_file) as f:
+                file_config = yaml.safe_load(f) or {}
+
+                if yaml_file.name == "frontend.yaml":
+                    frontend_config.update(file_config)
+                else:
+                    vllm_config.update(file_config)
+
+    # Apply environment variable overrides
+    for config in [vllm_config, frontend_config]:
+        for key, value in list(config.items()):
+            env_key = key.upper()
+            if env_key in os.environ:
+                if isinstance(value, bool):
+                    config[key] = os.environ[env_key].lower() == "true"
+                elif isinstance(value, int):
+                    config[key] = int(os.environ[env_key])
+                else:
+                    config[key] = os.environ[env_key]
+
+    return vllm_config, frontend_config
+
+
+def build_vllm_cmd(config: dict) -> list[str]:
+    cmd = ["vllm", "serve", config.pop("model")]
+
+    for key, value in config.items():
+        if value is None:
+            continue
+
+        cli_key = key.replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                cmd.append(f"--{cli_key}")
+        else:
+            cmd.extend([f"--{cli_key}", str(value)])
+
+    return cmd
 
 
 def main():
-    cmd = [
-        "vllm", "serve", MODEL,
-        "--quantization", "awq_marlin",
-        "--dtype", "float16",
-        "--gpu-memory-utilization", GPU_MEM_UTIL,
-        "--max-model-len", MAX_MODEL_LEN,
-        "--tensor-parallel-size", "1",
-        "--max-num-seqs", MAX_NUM_SEQS,
-        "--swap-space", "0",
-        "--host", "0.0.0.0",
-        "--port", PORT,
-        "--served-model-name", SERVED_NAME,
-        "--enable-prefix-caching",
-        "--trust-remote-code",
-        "--max-log-len", "100",
-    ]
+    vllm_config, frontend_config = load_configs()
+    cmd = build_vllm_cmd(vllm_config)
+
+    if frontend_config:
+        print(f"Frontend config loaded: {frontend_config}", flush=True)
 
     print(f"Starting vLLM server: {' '.join(cmd)}", flush=True)
     proc = subprocess.Popen(cmd)

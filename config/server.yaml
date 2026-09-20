@@ -1,0 +1,10 @@
+# OpenAI-compatible API / Frontend configuration
+# https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
+host: 0.0.0.0
+port: 8000
+
+# Logging
+max_log_len: 100
+
+# API security & authentication
+# api_key: "sk-..."  # Uncomment and set to enable API key authentication
