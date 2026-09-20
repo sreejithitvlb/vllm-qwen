@@ -31,6 +31,7 @@ WORKDIR /app
 
 COPY pyproject.toml .
 COPY main.py .
+COPY config/ ./config/
 
 # HF_HOME is also set in devcontainer.json for the dev environment;
 # kept here so the production image behaves the same way.
