@@ -11,6 +11,10 @@ RUN pip install --no-cache-dir uv
 # - tiktoken             : Qwen tokenizer backend
 # - einops               : tensor ops used by Qwen attention layers
 # - transformers_stream_generator : streaming generation helper
+# - pandas               : not a Qwen dependency; vllm's CLI entrypoint eagerly
+#                           imports vllm.entrypoints.cli.benchmark, which imports
+#                           vllm.benchmarks.datasets, which requires pandas even
+#                           when only running `vllm serve`.
 #
 # Install from upstream PyPI, NOT the Jetson wheel index baked into the base image.
 # dustynv sets PIP_INDEX_URL=http://jetson.webredirect.org/..., whose host only has
@@ -25,7 +29,8 @@ RUN uv pip install --system --no-cache --break-system-packages \
     tiktoken \
     einops \
     transformers_stream_generator \
-    pyyaml
+    pyyaml \
+    pandas
 
 WORKDIR /app
 
