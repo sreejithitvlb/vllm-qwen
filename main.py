@@ -33,6 +33,12 @@ def load_configs(config_dir: str = "config") -> tuple[dict, dict]:
                 else:
                     config[key] = os.environ[env_key]
 
+    # Merge frontend config into vllm_config, excluding informational fields
+    exclude_keys = {"api_base_url", "api_timeout"}
+    for key, value in frontend_config.items():
+        if key not in exclude_keys:
+            vllm_config[key] = value
+
     return vllm_config, frontend_config
 
 
@@ -47,6 +53,9 @@ def build_vllm_cmd(config: dict) -> list[str]:
         if isinstance(value, bool):
             if value:
                 cmd.append(f"--{cli_key}")
+        elif isinstance(value, list):
+            for item in value:
+                cmd.extend([f"--{cli_key}", str(item)])
         else:
             cmd.extend([f"--{cli_key}", str(value)])
 

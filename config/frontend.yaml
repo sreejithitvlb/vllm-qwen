@@ -1,5 +1,27 @@
-# External frontend/UI application configuration
-# Use these values to connect your separate UI project to the vLLM API
+# Frontend/OpenAI-compatible API server configuration
+# https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
+# Matches vLLM's "Frontend" configuration section
 
+# Server binding
+host: 0.0.0.0
+port: 8000
+
+# CORS & security
+# allowed_origins:
+#   - "http://localhost:3000"
+#   - "http://192.168.1.50:3000"
+allow_credentials: false
+# allowed_headers: ["*"]
+# allowed_methods: ["*"]
+
+# API authentication
+# api_key: "sk-..."  # Optional API key requirement
+
+# Logging
+max_log_len: 100
+disable_uvicorn_access_log: false
+disable_fastapi_docs: false
+
+# For external frontend applications (informational)
 api_base_url: "http://0.0.0.0:8000/v1"
 api_timeout: 30

@@ -75,4 +75,8 @@ vllm serve --help | grep -A 5 -- --max-model-len
 ```
 
 <!-- sync project locally-->
-scp -r sree@jetson:~/projects/vllm-qwen/* C:\Users\sreej\github-projects\jetson-deployment\vllm-qwen\
+<!-- Run in local machine and not in jetson server -->
+scp -r sree@jetson:/data/projects/vllm-qwen/* C:\Users\sreej\github-projects\jetson-deployment\vllm-qwen\
+
+<!-- run in jetson to copy from localhost -->
+scp -r C:\Users\sreej\github-projects\jetson-deployment\vllm-qwen\* sree@jetson:/data/projects/vllm-qwen/
