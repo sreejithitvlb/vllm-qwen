@@ -1,0 +1,13 @@
+# CacheConfig - KV Cache and GPU memory configuration
+# https://docs.vllm.ai/en/latest/
+
+# GPU memory management
+gpu_memory_utilization: 0.83   # Percentage of GPU memory to use (0.0-1.0)
+swap_space: 0                  # CPU swap space (GB) for overflow
+
+# KV Cache settings
+# kv_cache_dtype: auto          # Data type: auto, float16, bfloat16, float8
+# block_size: 16                # Token block size (default: 16)
+
+# Caching & optimization
+enable_prefix_caching: true    # Enable prefix caching for repeated prompts

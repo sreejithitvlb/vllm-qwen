@@ -1,0 +1,5 @@
+# SchedulerConfig - Request scheduling and batching configuration
+# https://docs.vllm.ai/en/latest/
+
+# Throughput & latency tuning
+max_num_seqs: 32               # Maximum number of sequences per batch
