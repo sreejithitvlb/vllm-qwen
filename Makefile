@@ -7,3 +7,6 @@ inference:
 		-p 8000:8000 \
 		vllm-qwen \
 		2>&1 | tee logs/vllm_$(shell date +%Y%m%d_%H%M%S).log
+
+stop:
+        docker stop vllm-qwen
