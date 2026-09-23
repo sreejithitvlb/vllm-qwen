@@ -9,4 +9,4 @@ inference:
 		2>&1 | tee logs/vllm_$(shell date +%Y%m%d_%H%M%S).log
 
 stop:
-        docker stop vllm-qwen
+	docker stop vllm-qwen
