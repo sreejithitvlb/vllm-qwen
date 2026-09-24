@@ -1,9 +1,14 @@
 # Base: dustynv/vllm pre-built for Jetson AGX Orin (L4T R36.4.0 / JetPack 6.x)
 # Ships PyTorch + CUDA 12.6 + vLLM compiled for ARM64 — do not swap this base
 # without verifying CUDA/driver compatibility with the host JetPack version.
-FROM dustynv/vllm:0.9.2-r36.4-cu128-24.04
+FROM dustynv/vllm:r36.4-cu129-24.04
 
 RUN pip install --no-cache-dir uv
+
+# Upgrade vLLM to latest version compatible with Jetson
+RUN uv pip install --system --no-cache --break-system-packages \
+    --index-url https://pypi.org/simple \
+    vllm==0.30
 
 # Qwen2 runtime dependencies not included in the vLLM base image.
 # - transformers>=4.40.0 : Qwen2 architecture support added in 4.40
