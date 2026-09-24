@@ -5,10 +5,11 @@ FROM dustynv/vllm:r36.4-cu129-24.04
 
 RUN pip install --no-cache-dir uv
 
-# Upgrade vLLM to latest version compatible with Jetson
+# Upgrade vLLM to latest version available for ARM64
 RUN uv pip install --system --no-cache --break-system-packages \
+    --upgrade \
     --index-url https://pypi.org/simple \
-    vllm==0.30
+    vllm
 
 # Qwen2 runtime dependencies not included in the vLLM base image.
 # - transformers>=4.40.0 : Qwen2 architecture support added in 4.40
