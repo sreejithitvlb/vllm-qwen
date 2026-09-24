@@ -11,6 +11,9 @@ RUN uv pip install --system --no-cache --break-system-packages \
     --index-url https://pypi.org/simple \
     vllm
 
+# Print vLLM version for verification
+RUN python3 -c "import vllm; print(f'✓ vLLM version: {vllm.__version__}')"
+
 # Qwen2 runtime dependencies not included in the vLLM base image.
 # - transformers>=4.40.0 : Qwen2 architecture support added in 4.40
 # - accelerate           : device_map / multi-GPU dispatch
