@@ -56,7 +56,7 @@ These are hard-coded in [main.py](main.py) and optimised for the Jetson AGX Orin
 | `--quantization` | `awq_marlin` | 4-bit AWQ quantization using the Marlin CUDA kernel. Required because the model (`-AWQ` suffix) was quantized with AWQ; Marlin gives the best throughput on Jetson's Ampere GPU. |
 | `--dtype` | `float16` | FP16 for all activations and compute. Jetson Orin does not support BF16 natively. |
 | `--tensor-parallel-size` | `1` | Single GPU — the Orin has one integrated GPU. |
-| `--swap-space` | `0` | Disables CPU swap for KV cache pages. Avoids slow PCIe memory paging which would tank latency on Jetson's shared memory architecture. |
+| ~~`--swap-space`~~ | — | Removed: vLLM 0.20 (V1 engine) no longer supports CPU swap for KV cache, so the flag is rejected. |
 | `--host` | `0.0.0.0` | Bind on all interfaces so the API is reachable from the host and the network. |
 | `--enable-prefix-caching` | *(flag)* | Reuses KV cache blocks across requests that share a common prompt prefix (e.g. a system prompt). Reduces latency and memory churn in chat workloads. |
 | `--trust-remote-code` | *(flag)* | Allows Qwen's custom tokenizer and model code to execute when loaded from HuggingFace. Required for Qwen2.5 models. |
