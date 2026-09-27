@@ -1,18 +1,33 @@
-# Base: dustynv/vllm pre-built for Jetson AGX Orin (L4T R36.4.0 / JetPack 6.x)
-# Ships PyTorch + CUDA 12.6 + vLLM compiled for ARM64 — do not swap this base
-# without verifying CUDA/driver compatibility with the host JetPack version.
-FROM dustynv/vllm:r36.4-cu129-24.04
+# Stage 1: base-vllm
+# NVIDIA L4T CUDA base with JetPack 6.x for Jetson AGX Orin
+# Includes CUDA 12.6 + cuDNN + TensorRT; no vLLM pre-installed
+FROM nvcr.io/nvidia/l4t-cuda:12.6-runtime-jetpack6 AS base-vllm
 
+# Install build dependencies for vLLM compilation on ARM64
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-dev \
+    python3-pip \
+    build-essential \
+    cmake \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv package manager
 RUN pip install --no-cache-dir uv
 
-# Upgrade vLLM to latest version available for ARM64
+# Install vLLM 0.29.0 (stable release for ARM64)
+# PyTorch will be pulled as a vLLM dependency
 RUN uv pip install --system --no-cache --break-system-packages \
-    --upgrade \
     --index-url https://pypi.org/simple \
-    vllm
+    vllm==0.29.0
 
-# Print vLLM version for verification
+# Verify vLLM installation
 RUN python3 -c "import vllm; print(f'✓ vLLM version: {vllm.__version__}')"
+
+
+# Stage 2: app
+# Qwen2 runtime dependencies and application code
+FROM base-vllm AS app
 
 # Qwen2 runtime dependencies not included in the vLLM base image.
 # - transformers>=4.40.0 : Qwen2 architecture support added in 4.40
