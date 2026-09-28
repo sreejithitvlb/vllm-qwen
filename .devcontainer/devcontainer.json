@@ -17,9 +17,13 @@
   // Requires the nvidia container runtime to be registered with Docker:
   //   sudo apt-get install -y nvidia-container-toolkit
   //   sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+  //
+  // /run/jtop.sock exposes the host's jtop service so `jtop` (jetson-stats) works
+  // inside the container. Install it on the host first: sudo pip3 install -U jetson-stats
   "runArgs": [
     "--runtime=nvidia",
-    "--shm-size=8g"
+    "--shm-size=8g",
+    "-v", "/run/jtop.sock:/run/jtop.sock"
   ],
 
   // Mirrors ENV HF_HOME in the Dockerfile so dev and production resolve the cache the same way.

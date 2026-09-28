@@ -1,5 +1,7 @@
-# SchedulerConfig - Request scheduling and batching configuration
+# SchedulerConfig - Batching and throughput configuration
 # https://docs.vllm.ai/en/latest/
 
 # Throughput & latency tuning
-max_num_seqs: 32               # Maximum number of sequences per batch
+max_num_seqs: 32               # Max concurrent sequences in a batch
+max_num_batched_tokens: 2048  # Token budget per scheduler step
+enable_chunked_prefill: true  # Split long prompts so they don't stall decoding

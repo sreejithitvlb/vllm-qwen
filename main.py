@@ -1,3 +1,4 @@
+import json
 import os
 import signal
 import subprocess
@@ -51,8 +52,11 @@ def build_vllm_cmd(config: dict) -> list[str]:
 
         cli_key = key.replace("_", "-")
         if isinstance(value, bool):
-            if value:
-                cmd.append(f"--{cli_key}")
+            # Pass false explicitly so it can override a flag vLLM enables by default
+            cmd.append(f"--{cli_key}" if value else f"--no-{cli_key}")
+        elif isinstance(value, dict):
+            # JSON-valued args like --compilation-config
+            cmd.extend([f"--{cli_key}", json.dumps(value)])
         elif isinstance(value, list):
             for item in value:
                 cmd.extend([f"--{cli_key}", str(item)])

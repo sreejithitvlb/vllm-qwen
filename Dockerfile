@@ -46,6 +46,11 @@ FROM base-vllm AS app
 #                           imports vllm.entrypoints.cli.benchmark, which imports
 #                           vllm.benchmarks.datasets, which requires pandas even
 #                           when only running `vllm serve`.
+# - jetson-stats         : not a Qwen dependency; provides `jtop` for monitoring
+#                           GPU/CPU/memory/power while serving. The container
+#                           client talks to the host's jtop service, so the host
+#                           must have jetson-stats installed (same major version)
+#                           and /run/jtop.sock must be bind-mounted in.
 #
 # Install from upstream PyPI, NOT the Jetson wheel index baked into the base image.
 # dustynv sets PIP_INDEX_URL=http://jetson.webredirect.org/..., whose host only has
@@ -61,7 +66,8 @@ RUN uv pip install --system --no-cache --break-system-packages \
     einops \
     transformers_stream_generator \
     pyyaml \
-    pandas
+    pandas \
+    jetson-stats
 
 WORKDIR /app
 

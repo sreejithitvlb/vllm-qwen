@@ -1,0 +1,8 @@
+# CompilationConfig - torch.compile and CUDA graph settings
+# https://docs.vllm.ai/en/latest/
+# No params set yet: options to be filled in from `vllm serve --help=CompilationConfig`
+# (vLLM 0.20.0). Note: torch.compile generates Triton kernels, and Triton isn't
+# installed in this image (see kernels_readme.md).
+# A YAML mapping here is sent as JSON, e.g.
+# compilation_config:
+#   cudagraph_mode: FULL

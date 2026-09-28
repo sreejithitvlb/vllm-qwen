@@ -1,0 +1,4 @@
+# KernelConfig - Kernel selection and tuning
+# https://docs.vllm.ai/en/latest/
+# No params set yet: options to be filled in from `vllm serve --help=KernelConfig`
+# (vLLM 0.20.0). Kernel background for this setup is in kernels_readme.md.

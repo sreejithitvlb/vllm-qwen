@@ -1,0 +1,7 @@
+# AttentionConfig - Attention kernel selection
+# https://docs.vllm.ai/en/latest/
+# No params are required: vLLM auto-selects the backend. Details in configread.md.
+
+# Backend selection
+# attention_backend: FLASH_ATTN  # Force a backend (FLASH_ATTN; no Triton in this image)
+# flash_attn_version: 2          # Orin (Ampere) only supports FlashAttention 2
